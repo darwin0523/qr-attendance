@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QR Attendance</title>
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<style>
+  body{font-family:Arial,sans-serif;margin:0;background:#f3f6fb;color:#222}
+  header{background:#2563eb;color:#fff;padding:14px 20px;font-size:20px}
+  nav{display:flex;gap:8px;padding:12px 20px}
+  nav button{padding:10px 18px;border:0;border-radius:8px;background:#dbe5f7;cursor:pointer;font-size:15px}
+  nav button.active{background:#2563eb;color:#fff}
+  section{display:none;padding:0 20px 30px;max-width:900px}
+  section.active{display:block}
+  .card{background:#fff;border-radius:10px;padding:16px;margin-bottom:16px;box-shadow:0 1px 4px #0002}
+  input{padding:9px;margin:4px 6px 4px 0;border:1px solid #bbb;border-radius:6px}
+  .btn{padding:9px 16px;border:0;border-radius:6px;background:#2563eb;color:#fff;cursor:pointer}
+  .btn.red{background:#dc2626}
+  table{width:100%;border-collapse:collapse}
+  th,td{padding:8px;border-bottom:1px solid #eee;text-align:left}
+  #result{font-size:20px;padding:14px;border-radius:8px;margin-top:10px;text-align:center}
+  .ok{background:#dcfce7;color:#166534}.dup{background:#fef9c3;color:#854d0e}.err{background:#fee2e2;color:#991b1b}
+  #qrModal{display:none;position:fixed;inset:0;background:#000a;align-items:center;justify-content:center}
+  #qrModal .box{background:#fff;padding:24px;border-radius:12px;text-align:center}
+  @media print{body *{visibility:hidden}#qrModal .box,#qrModal .box *{visibility:visible}#qrModal .box{position:absolute;left:0;top:0}}
+</style>
+</head>
+<body>
+<header>📚 Elementary School QR Attendance</header>
+<nav>
+  <button class="active" data-tab="scan">Scan</button>
+  <button data-tab="students">Students</button>
+  <button data-tab="attendance">Attendance</button>
+</nav>
+
+<section id="scan" class="active">
+  <div class="card">
+    <div id="reader" style="width:100%;max-width:400px"></div>
+    <div id="result"></div>
+  </div>
+</section>
+
+<section id="students">
+  <div class="card">
+    <h3>Add Student</h3>
+    <input id="sid" placeholder="Student ID (e.g. 2026-001)">
+    <input id="sname" placeholder="Full name">
+    <input id="sgrade" placeholder="Grade/Section (e.g. Grade 1-A)">
+    <button class="btn" onclick="addStudent()">Add</button>
+    <p id="addMsg"></p>
+  </div>
+  <div class="card">
+    <table><thead><tr><th>ID</th><th>Name</th><th>Grade</th><th></th></tr></thead><tbody id="studentRows"></tbody></table>
+  </div>
+</section>
+
+<section id="attendance">
+  <div class="card">
+    <input type="date" id="adate" onchange="loadAttendance()">
+    <button class="btn" onclick="loadAttendance()">Refresh</button>
+    <h3>Present (<span id="pc">0</span>)</h3>
+    <table><thead><tr><th>Time</th><th>ID</th><th>Name</th><th>Grade</th></tr></thead><tbody id="presentRows"></tbody></table>
+    <h3>Absent (<span id="ac">0</span>)</h3>
+    <table><thead><tr><th>ID</th><th>Name</th><th>Grade</th></tr></thead><tbody id="absentRows"></tbody></table>
+  </div>
+</section>
+
+<div id="qrModal"><div class="box">
+  <h3 id="qrName"></h3><p id="qrGrade"></p><img id="qrImg" width="250"><br><br>
+  <button class="btn" onclick="window.print()">Print</button>
+  <button class="btn red" onclick="document.getElementById('qrModal').style.display='none'">Close</button>
+</div></div>
+
+<script>
+const $ = id => document.getElementById(id);
+let scanner, locked = false;
+
+// ----- Tabs -----
+document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('nav button, section').forEach(e => e.classList.remove('active'));
+  b.classList.add('active'); $(b.dataset.tab).classList.add('active');
+  if (b.dataset.tab === 'students') loadStudents();
+  if (b.dataset.tab === 'attendance') loadAttendance();
+});
+
+// ----- Scanner -----
+function showResult(cls, msg){ const r=$('result'); r.className=cls; r.textContent=msg; }
+async function onScan(text){
+  if (locked) return; locked = true;
+  const res = await fetch('/api/scan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({studentId:text})});
+  const d = await res.json();
+  showResult(d.status==='ok'?'ok':d.status==='duplicate'?'dup':'err', d.message);
+  setTimeout(()=>{locked=false;},2000); // pause 2s between scans
+}
+scanner = new Html5QrcodeScanner('reader',{fps:10,qrbox:250},false);
+scanner.render(onScan, ()=>{});
+
+// ----- Students -----
+async function addStudent(){
+  const body = {studentId:$('sid').value,name:$('sname').value,grade:$('sgrade').value};
+  const res = await fetch('/api/students',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const d = await res.json();
+  $('addMsg').textContent = res.ok ? 'Student added!' : d.error;
+  if(res.ok){ $('sid').value=$('sname').value=$('sgrade').value=''; loadStudents(); }
+}
+async function loadStudents(){
+  const list = await (await fetch('/api/students')).json();
+  $('studentRows').innerHTML = list.map(s=>`<tr><td>${s.studentId}</td><td>${s.name}</td><td>${s.grade}</td>
+    <td><button class="btn" onclick="showQR('${s.studentId}')">QR</button>
+    <button class="btn red" onclick="delStudent('${s.studentId}')">Delete</button></td></tr>`).join('');
+}
+async function showQR(id){
+  const d = await (await fetch(`/api/students/${id}/qr`)).json();
+  $('qrImg').src=d.qr; $('qrName').textContent=d.student.name; $('qrGrade').textContent=d.student.grade+' • '+d.student.studentId;
+  $('qrModal').style.display='flex';
+}
+async function delStudent(id){ if(confirm('Delete this student?')){ await fetch('/api/students/'+id,{method:'DELETE'}); loadStudents(); } }
+
+// ----- Attendance -----
+async function loadAttendance(){
+  const q = $('adate').value ? '?date='+$('adate').value : '';
+  const d = await (await fetch('/api/attendance'+q)).json();
+  $('adate').value = d.date;
+  $('pc').textContent = d.present.length; $('ac').textContent = d.absent.length;
+  $('presentRows').innerHTML = d.present.map(p=>`<tr><td>${p.time}</td><td>${p.studentId}</td><td>${p.name}</td><td>${p.grade}</td></tr>`).join('');
+  $('absentRows').innerHTML = d.absent.map(s=>`<tr><td>${s.studentId}</td><td>${s.name}</td><td>${s.grade}</td></tr>`).join('');
+}
+</script>
+</body>
+</html>
